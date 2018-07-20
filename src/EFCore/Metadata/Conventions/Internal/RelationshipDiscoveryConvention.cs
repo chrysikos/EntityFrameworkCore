@@ -80,15 +80,17 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions.Internal
 
         private IReadOnlyList<RelationshipCandidate> FindRelationshipCandidates(InternalEntityTypeBuilder entityTypeBuilder)
         {
+            var entityType = entityTypeBuilder.Metadata;
+            var model = entityType.Model;
             var relationshipCandidates = new Dictionary<EntityType, RelationshipCandidate>();
             var ownership = entityTypeBuilder.Metadata.FindOwnership();
             if (ownership == null
-                && entityTypeBuilder.Metadata.Model.ShouldBeOwnedType(entityTypeBuilder.Metadata.ClrType))
+                && model.ShouldBeOwnedType(entityTypeBuilder.Metadata.ClrType))
             {
                 return relationshipCandidates.Values.ToList();
             }
 
-            var navigationCandidates = GetNavigationCandidates(entityTypeBuilder.Metadata);
+            var navigationCandidates = GetNavigationCandidates(entityType);
             foreach (var candidateTuple in navigationCandidates)
             {
                 var navigationPropertyInfo = candidateTuple.Key;
@@ -99,25 +101,10 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions.Internal
                     continue;
                 }
 
-                InternalEntityTypeBuilder candidateTargetEntityTypeBuilder = null;
-                if (!entityTypeBuilder.ModelBuilder.Metadata.HasEntityTypeWithDefiningNavigation(targetClrType))
-                {
-                    candidateTargetEntityTypeBuilder = entityTypeBuilder.ModelBuilder.Entity(targetClrType, ConfigurationSource.Convention);
-                }
-                else if (!targetClrType.GetTypeInfo().Equals(entityTypeBuilder.Metadata.ClrType.GetTypeInfo())
-                         && !entityTypeBuilder.Metadata.IsInDefinitionPath(targetClrType))
-                {
-                    candidateTargetEntityTypeBuilder =
-                        entityTypeBuilder.Metadata.FindNavigation(navigationPropertyInfo.Name)?.GetTargetType().Builder
-                        ?? entityTypeBuilder.ModelBuilder.Metadata.FindEntityType(
-                            targetClrType, navigationPropertyInfo.Name, entityTypeBuilder.Metadata)?.Builder
-                        ?? entityTypeBuilder.ModelBuilder.Entity(
-                            targetClrType, navigationPropertyInfo.Name, entityTypeBuilder.Metadata, ConfigurationSource.Convention);
-                }
+                var candidateTargetEntityTypeBuilder = GetTargetEntityTypeBuilder(
+                    entityTypeBuilder, targetClrType, navigationPropertyInfo, ConfigurationSource.Convention);
 
-                if (candidateTargetEntityTypeBuilder == null
-                    || (entityTypeBuilder.ModelBuilder.Metadata.ShouldBeOwnedType(entityTypeBuilder.Metadata.ClrType)
-                        && candidateTargetEntityTypeBuilder.Metadata == entityTypeBuilder.Metadata))
+                if (candidateTargetEntityTypeBuilder == null)
                 {
                     continue;
                 }
@@ -128,11 +115,11 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions.Internal
                     continue;
                 }
 
-                if (!entityTypeBuilder.Metadata.Model.ShouldBeOwnedType(candidateTargetEntityType.ClrType))
+                if (!model.ShouldBeOwnedType(targetClrType))
                 {
                     var targetOwnership = candidateTargetEntityType.FindOwnership();
                     if (targetOwnership != null
-                        && (targetOwnership.PrincipalEntityType != entityTypeBuilder.Metadata
+                        && (targetOwnership.PrincipalEntityType != entityType
                             || targetOwnership.PrincipalToDependent.Name != navigationPropertyInfo.Name)
                         && (ownership == null
                             || ownership.PrincipalEntityType != candidateTargetEntityType))
@@ -145,8 +132,6 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions.Internal
                 {
                     continue;
                 }
-
-                var entityType = entityTypeBuilder.Metadata;
 
                 if (relationshipCandidates.TryGetValue(candidateTargetEntityType, out var existingCandidate))
                 {
@@ -178,13 +163,13 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions.Internal
                         || navigationPropertyInfo.IsSameAs(inversePropertyInfo)
                         || entityType.IsQueryType
                         || (ownership != null
-                            && !candidateTargetEntityType.IsInOwnershipPath(entityTypeBuilder.Metadata)
-                            && (!candidateTargetEntityType.HasDefiningNavigation()
-                                || candidateTargetEntityType.DefiningEntityType != entityType)
+                            && !candidateTargetEntityType.IsInOwnershipPath(entityType)
+                            && (candidateTargetEntityType.IsOwned()
+                                || !model.ShouldBeOwnedType(targetClrType))
                             && (ownership.PrincipalEntityType != candidateTargetEntityType
                                 || ownership.PrincipalToDependent.Name != inversePropertyInfo.Name))
                         || (entityType.HasDefiningNavigation()
-                            && !candidateTargetEntityType.IsInDefinitionPath(entityTypeBuilder.Metadata.ClrType)
+                            && !candidateTargetEntityType.IsInDefinitionPath(entityType.ClrType)
                             && (entityType.DefiningEntityType != candidateTargetEntityType
                                 || entityType.DefiningNavigationName != inversePropertyInfo.Name))
                         || !IsCandidateNavigationProperty(
@@ -204,6 +189,68 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions.Internal
             }
 
             return relationshipCandidates.Values.ToList();
+        }
+
+        /// <summary>
+        ///     This API supports the Entity Framework Core infrastructure and is not intended to be used
+        ///     directly from your code. This API may change or be removed in future releases.
+        /// </summary>
+        public static InternalEntityTypeBuilder GetTargetEntityTypeBuilder(
+            InternalEntityTypeBuilder entityTypeBuilder,
+            Type targetClrType,
+            PropertyInfo navigationPropertyInfo,
+            ConfigurationSource? configurationSource)
+        {
+            var entityType = entityTypeBuilder.Metadata;
+            InternalEntityTypeBuilder targetEntityTypeBuilder = null;
+            if (!entityTypeBuilder.ModelBuilder.Metadata.EntityTypeShouldHaveDefiningNavigation(targetClrType))
+            {
+                if (entityType.Model.ShouldBeOwnedType(targetClrType))
+                {
+                    return entityType.Builder.Owns(targetClrType, navigationPropertyInfo, configurationSource)
+                        ?.Metadata.DeclaringEntityType.Builder;
+                }
+
+                targetEntityTypeBuilder = configurationSource.HasValue
+                    ? entityTypeBuilder.ModelBuilder.Entity(targetClrType, configurationSource.Value)
+                    : entityTypeBuilder.ModelBuilder.Metadata.FindEntityType(targetClrType).Builder;
+            }
+            // ReSharper disable CheckForReferenceEqualityInstead.1
+            // ReSharper disable CheckForReferenceEqualityInstead.3
+            else if (!targetClrType.Equals(entityTypeBuilder.Metadata.ClrType))
+            {
+                if (entityType.DefiningEntityType?.ClrType.Equals(targetClrType) == true)
+                {
+                    return entityType.DefiningEntityType.Builder;
+                }
+
+                var ownership = entityType.FindOwnership();
+                if (ownership?.PrincipalEntityType.ClrType.Equals(targetClrType) == true)
+                {
+                    return ownership.PrincipalEntityType.Builder;
+                }
+
+                targetEntityTypeBuilder =
+                    entityType.FindNavigation(navigationPropertyInfo.Name)?.GetTargetType().Builder
+                    ?? entityType.Model.FindEntityType(
+                        targetClrType, navigationPropertyInfo.Name, entityType)?.Builder;
+
+                if (targetEntityTypeBuilder == null
+                    && configurationSource.HasValue
+                    && !entityType.IsInDefinitionPath(targetClrType)
+                    && !entityType.IsInOwnershipPath(targetClrType))
+                {
+                    return entityType.Model.ShouldBeOwnedType(targetClrType)
+                        ? entityType.Builder.Owns(targetClrType, navigationPropertyInfo, configurationSource.Value)
+                            ?.Metadata.DeclaringEntityType.Builder
+                        : entityTypeBuilder.ModelBuilder.Entity(
+                            targetClrType, navigationPropertyInfo.Name, entityType, configurationSource.Value);
+                }
+            }
+            // ReSharper restore CheckForReferenceEqualityInstead.1
+            // ReSharper restore CheckForReferenceEqualityInstead.3
+
+            return targetEntityTypeBuilder;
         }
 
         private static IReadOnlyList<RelationshipCandidate> RemoveIncompatibleWithExistingRelationships(
@@ -693,14 +740,11 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Conventions.Internal
             InternalEntityTypeBuilder targetEntityTypeBuilder,
             string navigationName,
             MemberInfo propertyInfo)
-        {
-            return (targetEntityTypeBuilder.Metadata.Builder == null
-                 && sourceEntityTypeBuilder.ModelBuilder.IsIgnored(
-                     targetEntityTypeBuilder.Metadata.Name, ConfigurationSource.Convention))
-                || !IsCandidateNavigationProperty(sourceEntityTypeBuilder, navigationName, propertyInfo)
-                ? true
-                : Apply(sourceEntityTypeBuilder.Metadata, propertyInfo);
-        }
+            => (targetEntityTypeBuilder.Metadata.Builder == null
+                && sourceEntityTypeBuilder.ModelBuilder.IsIgnored(
+                    targetEntityTypeBuilder.Metadata.Name, ConfigurationSource.Convention))
+               || !IsCandidateNavigationProperty(sourceEntityTypeBuilder, navigationName, propertyInfo)
+               || Apply(sourceEntityTypeBuilder.Metadata, propertyInfo);
 
         private bool Apply(EntityType entityType, MemberInfo navigationProperty)
         {

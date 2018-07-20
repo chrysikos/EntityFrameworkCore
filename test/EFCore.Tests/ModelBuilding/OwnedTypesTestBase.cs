@@ -472,6 +472,41 @@ namespace Microsoft.EntityFrameworkCore.ModelBuilding
             }
 
             [Fact]
+            public virtual void Can_configure_owned_type_collection_with_one_call_afterwards()
+            {
+                var modelBuilder = CreateModelBuilder();
+
+                modelBuilder.Owned<SpecialOrder>();
+                var specialCustomer = modelBuilder.Entity<SpecialCustomer>().Metadata;
+                modelBuilder.Owned<Order>();
+                modelBuilder.Ignore<SpecialOrder>();
+
+                modelBuilder.Validate();
+
+                var model = (Model)modelBuilder.Model;
+                var customer = model.FindEntityType(typeof(Customer));
+
+                var ownership = customer.FindNavigation(nameof(Customer.Orders)).ForeignKey;
+                Assert.True(ownership.IsOwnership);
+                Assert.False(ownership.IsUnique);
+                Assert.Equal(nameof(Order.OrderId), ownership.DeclaringEntityType.FindPrimaryKey().Properties.Single().Name);
+                var specialOwnership = specialCustomer.FindNavigation(nameof(SpecialCustomer.SpecialOrders)).ForeignKey;
+                Assert.True(specialOwnership.IsOwnership);
+                Assert.False(specialOwnership.IsUnique);
+                Assert.Equal(nameof(SpecialOrder.SpecialOrderId), specialOwnership.DeclaringEntityType.FindPrimaryKey().Properties.Single().Name);
+
+                Assert.Equal(9, modelBuilder.Model.GetEntityTypes().Count());
+                Assert.Equal(2, modelBuilder.Model.GetEntityTypes(typeof(Order)).Count);
+                Assert.Equal(7, modelBuilder.Model.GetEntityTypes().Count(e => !e.HasDefiningNavigation()));
+                Assert.Equal(5, modelBuilder.Model.GetEntityTypes().Count(e => e.IsOwned()));
+
+                Assert.Null(model.FindIgnoredTypeConfigurationSource(typeof(Order)));
+                Assert.Null(model.FindIgnoredTypeConfigurationSource(typeof(SpecialOrder)));
+                Assert.Null(model.FindIgnoredTypeConfigurationSource(typeof(Customer)));
+                Assert.Null(model.FindIgnoredTypeConfigurationSource(typeof(SpecialCustomer)));
+            }
+
+            [Fact]
             public virtual void Can_configure_single_owned_type_using_attribute()
             {
                 var modelBuilder = CreateModelBuilder();

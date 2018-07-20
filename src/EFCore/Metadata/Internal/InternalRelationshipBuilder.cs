@@ -2656,34 +2656,21 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Internal
                     principalEntityType = model.FindEntityType(Metadata.PrincipalEntityType.Name);
                     if (principalEntityType == null)
                     {
-                        if (model.HasEntityTypeWithDefiningNavigation(Metadata.PrincipalEntityType.Name))
+                        if (model.EntityTypeShouldHaveDefiningNavigation(Metadata.PrincipalEntityType.Name)
+                            && Metadata.PrincipalEntityType.HasDefiningNavigation())
                         {
-                            if (Metadata.PrincipalEntityType.HasDefiningNavigation())
-                            {
-                                principalEntityType = model.FindEntityType(
-                                    Metadata.PrincipalEntityType.Name,
-                                    Metadata.PrincipalEntityType.DefiningNavigationName,
-                                    Metadata.PrincipalEntityType.DefiningEntityType.Name);
-                                if (principalEntityType == null)
-                                {
-                                    return null;
-                                }
-                            }
-                            else
+                            principalEntityType = model.FindEntityType(
+                                Metadata.PrincipalEntityType.Name,
+                                Metadata.PrincipalEntityType.DefiningNavigationName,
+                                Metadata.PrincipalEntityType.DefiningEntityType.Name);
+                            if (principalEntityType == null)
                             {
                                 return null;
                             }
                         }
                         else
                         {
-                            using (ModelBuilder.Metadata.ConventionDispatcher.StartBatch())
-                            {
-                                var entityTypeSnapshot = InternalEntityTypeBuilder.DetachAllMembers(Metadata.PrincipalEntityType);
-                                principalEntityType = Metadata.PrincipalEntityType.ClrType == null
-                                    ? model.AddEntityType(Metadata.PrincipalEntityType.Name, configurationSource)
-                                    : model.AddEntityType(Metadata.PrincipalEntityType.ClrType, configurationSource);
-                                entityTypeSnapshot.Attach(principalEntityType.Builder);
-                            }
+                            return null;
                         }
                     }
 
@@ -2692,11 +2679,11 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Internal
             }
 
             if (!Metadata.GetConfigurationSource().Overrides(ConfigurationSource.Explicit)
-                && (principalEntityType.HasDefiningNavigation()
-                    || principalEntityType.FindOwnership() != null)
+                && principalEntityType.FindOwnership() != null
                 && Metadata.DependentToPrincipal != null
                 && !Metadata.IsOwnership)
             {
+                // Only the owner can have a navigation to an owned type
                 return null;
             }
 
@@ -2723,9 +2710,7 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Internal
                     {
                         using (ModelBuilder.Metadata.ConventionDispatcher.StartBatch())
                         {
-                            var entityTypeSnapshot = InternalEntityTypeBuilder.DetachAllMembers(Metadata.DeclaringEntityType);
-
-                            if (model.HasEntityTypeWithDefiningNavigation(Metadata.DeclaringEntityType.Name))
+                            if (model.EntityTypeShouldHaveDefiningNavigation(Metadata.DeclaringEntityType.Name))
                             {
                                 if (Metadata.DeclaringEntityType.HasDefiningNavigation())
                                 {
@@ -2740,17 +2725,26 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Internal
                                     if (Metadata.IsOwnership
                                         && Metadata.PrincipalToDependent != null)
                                     {
-                                        dependentEntityType = Metadata.DeclaringEntityType.ClrType == null
-                                            ? model.AddEntityType(
-                                                Metadata.DeclaringEntityType.Name,
-                                                Metadata.PrincipalToDependent.Name,
-                                                principalEntityType,
-                                                configurationSource)
-                                            : model.AddEntityType(
-                                                Metadata.DeclaringEntityType.ClrType,
-                                                Metadata.PrincipalToDependent.Name,
-                                                principalEntityType,
-                                                configurationSource);
+                                        if (model.HasOtherEntityTypesWithDefiningNavigation(Metadata.DeclaringEntityType))
+                                        {
+                                            dependentEntityType = Metadata.DeclaringEntityType.ClrType == null
+                                                ? model.AddEntityType(
+                                                    Metadata.DeclaringEntityType.Name,
+                                                    Metadata.PrincipalToDependent.Name,
+                                                    principalEntityType,
+                                                    configurationSource)
+                                                : model.AddEntityType(
+                                                    Metadata.DeclaringEntityType.ClrType,
+                                                    Metadata.PrincipalToDependent.Name,
+                                                    principalEntityType,
+                                                    configurationSource);
+                                        }
+                                        else
+                                        {
+                                            dependentEntityType = Metadata.DeclaringEntityType.ClrType == null
+                                                ? model.Builder.Entity(Metadata.DeclaringEntityType.Name, configurationSource).Metadata
+                                                : model.Builder.Entity(Metadata.DeclaringEntityType.ClrType, configurationSource).Metadata;
+                                        }
                                     }
                                     else
                                     {
@@ -2764,8 +2758,6 @@ namespace Microsoft.EntityFrameworkCore.Metadata.Internal
                                     ? model.AddEntityType(Metadata.DeclaringEntityType.Name, configurationSource)
                                     : model.AddEntityType(Metadata.DeclaringEntityType.ClrType, configurationSource);
                             }
-
-                            entityTypeSnapshot?.Attach(dependentEntityType.Builder);
                         }
                     }
 
